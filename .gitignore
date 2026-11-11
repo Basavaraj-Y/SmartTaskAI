@@ -36,3 +36,9 @@ runs/
 # IDE
 .vscode/
 .idea/
+
+
+!deep_learning/datasets/raw/.gitkeep
+!deep_learning/datasets/processed/.gitkeep
+!deep_learning/datasets/splits/.gitkeep
+!deep_learning/saved_models/.gitkeep
