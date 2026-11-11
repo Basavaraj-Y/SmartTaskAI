@@ -1,0 +1,22 @@
+
+# Deep Learning
+torch
+torchvision
+torchaudio
+
+# Data Science
+numpy
+pandas
+matplotlib
+seaborn
+scikit-learn
+
+# Jupyter
+jupyterlab
+ipykernel
+
+# Dataset support
+openpyxl
+
+# Experiment tracking
+tensorboard

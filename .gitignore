@@ -1,0 +1,38 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environment
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment variables
+.env
+.env.*
+
+# Dataset files
+deep_learning/datasets/raw/*
+deep_learning/datasets/processed/*
+deep_learning/datasets/splits/*
+
+# Model files
+deep_learning/saved_models/*
+*.pth
+*.pt
+
+# Logs
+logs/
+*.log
+runs/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
