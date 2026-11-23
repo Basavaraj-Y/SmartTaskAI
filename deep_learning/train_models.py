@@ -1,7 +1,8 @@
-"""Train three independent PyTorch models on reproducible synthetic examples.
+"""Train three independent PyTorch models with explicit dataset provenance.
 
-These datasets exercise the pipeline; they are not historical project data and
-must not be presented as evidence of real-world predictive performance.
+Priority uses public Jira issues when available, with a labelled synthetic
+fallback. Completion and delay use synthetic examples; none are SmartTask AI
+history or evidence of real-world predictive performance.
 """
 
 import json
@@ -18,8 +19,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, mean_absolute_error, mean_squared_error
+from sklearn.compose import ColumnTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    precision_recall_fscore_support,
+)
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import OneHotEncoder
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -316,6 +329,24 @@ def train_model(model, train_dataset, validation_dataset, criterion, epochs=EPOC
     return model.cpu()
 
 
+def per_class_metrics(actual, predictions, label_names):
+    precision, recall, f1, support = precision_recall_fscore_support(
+        actual,
+        predictions,
+        labels=np.arange(len(label_names)),
+        zero_division=0,
+    )
+    return {
+        label: {
+            "precision": float(precision[index]),
+            "recall": float(recall[index]),
+            "f1": float(f1[index]),
+            "support": int(support[index]),
+        }
+        for index, label in enumerate(label_names)
+    }
+
+
 def classifier_metrics(model, inputs, labels, label_names, baseline, chart_path):
     model.eval()
     with torch.inference_mode():
@@ -330,6 +361,7 @@ def classifier_metrics(model, inputs, labels, label_names, baseline, chart_path)
             f1_score(actual, baseline_predictions, average="macro", zero_division=0)
         ),
         "test_examples": int(len(actual)),
+        "per_class": per_class_metrics(actual, predictions, label_names),
     }
     matrix = confusion_matrix(actual, predictions, labels=np.arange(len(label_names)))
     fig, axis = plt.subplots(figsize=(6, 5))
@@ -349,6 +381,39 @@ def classifier_metrics(model, inputs, labels, label_names, baseline, chart_path)
     fig.savefig(chart_path, dpi=140)
     plt.close(fig)
     result["confusion_matrix"] = matrix.tolist()
+    row_totals = matrix.sum(axis=1, keepdims=True)
+    normalized_matrix = np.divide(
+        matrix,
+        row_totals,
+        out=np.zeros_like(matrix, dtype=float),
+        where=row_totals != 0,
+    )
+    fig, axis = plt.subplots(figsize=(6, 5))
+    image = axis.imshow(normalized_matrix, cmap="Blues", vmin=0, vmax=1)
+    axis.set(
+        xticks=np.arange(len(label_names)), yticks=np.arange(len(label_names)),
+        xticklabels=label_names, yticklabels=label_names,
+        xlabel="Predicted label", ylabel="True label",
+        title="Row-normalized held-out confusion matrix",
+    )
+    plt.setp(axis.get_xticklabels(), rotation=25, ha="right")
+    for row in range(normalized_matrix.shape[0]):
+        for column in range(normalized_matrix.shape[1]):
+            axis.text(
+                column,
+                row,
+                f"{normalized_matrix[row, column]:.2f}",
+                ha="center",
+                va="center",
+            )
+    fig.colorbar(image, ax=axis)
+    fig.tight_layout()
+    normalized_path = chart_path.with_name(
+        f"{chart_path.stem}_normalized{chart_path.suffix}"
+    )
+    fig.savefig(normalized_path, dpi=140)
+    plt.close(fig)
+    result["normalized_confusion_matrix"] = normalized_matrix.tolist()
     return result
 
 
@@ -369,6 +434,17 @@ def train_priority():
             "validation": int(pd.Series(groups[validation]).nunique()),
             "test": int(pd.Series(groups[test]).nunique()),
         }
+    provenance["class_counts_by_split"] = {
+        split_name: {
+            label: int(np.count_nonzero(labels[indices] == label_index))
+            for label_index, label in enumerate(PRIORITY_LABELS)
+        }
+        for split_name, indices in (
+            ("train", train),
+            ("validation", validation),
+            ("test", test),
+        )
+    }
     vocabulary = {"<pad>": 0, "<unk>": 1}
     for text in frame.iloc[train]["description"]:
         for token in re.findall(r"[a-z0-9]+", text.lower())[:MAX_TOKENS]:
@@ -396,6 +472,44 @@ def train_priority():
         PRIORITY_LABELS, baseline,
         EXPERIMENT_DIR / "priority_confusion_matrix.png",
     )
+    text_baseline = make_pipeline(
+        ColumnTransformer(
+            [
+                (
+                    "summary",
+                    TfidfVectorizer(
+                        max_features=40000,
+                        ngram_range=(1, 2),
+                        min_df=2,
+                        sublinear_tf=True,
+                    ),
+                    "description",
+                ),
+                (
+                    "task_type",
+                    OneHotEncoder(handle_unknown="ignore"),
+                    ["task_type"],
+                ),
+            ]
+        ),
+        LogisticRegression(max_iter=500, random_state=SEED),
+    )
+    features_frame = frame[["description", "task_type"]]
+    text_baseline.fit(features_frame.iloc[train], labels[train])
+    baseline_predictions = text_baseline.predict(features_frame.iloc[test])
+    metrics["tfidf_logistic_regression_baseline"] = {
+        "test_accuracy": float(accuracy_score(labels[test], baseline_predictions)),
+        "test_macro_f1": float(
+            f1_score(labels[test], baseline_predictions, average="macro", zero_division=0)
+        ),
+        "test_examples": int(len(test)),
+        "per_class": per_class_metrics(
+            labels[test], baseline_predictions, PRIORITY_LABELS
+        ),
+        "confusion_matrix": confusion_matrix(
+            labels[test], baseline_predictions, labels=np.arange(len(PRIORITY_LABELS))
+        ).tolist(),
+    }
     metrics["dataset_source"] = provenance["source"]
     metrics["dataset_records"] = provenance["records_used"]
     torch.save(
